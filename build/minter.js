@@ -2216,6 +2216,88 @@ var TypeBrand;
   TypeBrand["BIGINT"] = "bigint";
   TypeBrand["DATE"] = "date";
 })(TypeBrand || (TypeBrand = {}));
+/**
+ * Asserts that the expression passed to the function is truthy, otherwise throws a new Error with the provided message.
+ *
+ * @param expression - The expression to be asserted.
+ * @param message - The error message to be printed.
+ */
+function assert(expression, message) {
+  if (!expression) {
+    throw new Error("assertion failed: " + message);
+  }
+}
+function getValueWithOptions(subDatatype, value, options = {
+  deserializer: deserialize
+}) {
+  if (value === null) {
+    return options?.defaultValue ?? null;
+  }
+  // here is an obj
+  let deserialized = deserialize(value);
+  if (deserialized === undefined || deserialized === null) {
+    return options?.defaultValue ?? null;
+  }
+  if (options?.reconstructor) {
+    // example: // { collection: {reconstructor: LookupMap.reconstruct, value: 'string'}}
+    const collection = options.reconstructor(deserialized);
+    if (subDatatype !== undefined &&
+    // eslint-disable-next-line no-prototype-builtins
+    subDatatype.hasOwnProperty("class") &&
+    // eslint-disable-next-line no-prototype-builtins
+    subDatatype["class"].hasOwnProperty("value")) {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      collection.subtype = function () {
+        // example: {class: UnorderedMap, value: UnorderedMap}
+        return subDatatype["class"]["value"];
+      };
+    }
+    return collection;
+  }
+  // example: { collection: {reconstructor: LookupMap.reconstruct, value: 'string'}}
+  if (subDatatype !== undefined) {
+    // subtype info is a class constructor, Such as Car
+    if (typeof subDatatype === "function") {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      deserialized = decodeObj2class(new subDatatype(), deserialized);
+    } else if (typeof subDatatype === "object") {
+      // normal collections of array, map; subtype will be:
+      //  {map: { key: 'string', value: 'string' }} or {array: {value: 'string'}} ..
+      // eslint-disable-next-line no-prototype-builtins
+      if (subDatatype.hasOwnProperty("map")) {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        for (const mkey in deserialized) {
+          if (subDatatype["map"]["value"] !== "string") {
+            deserialized[mkey] = decodeObj2class(new subDatatype["map"]["value"](), value[mkey]);
+          }
+        }
+        // eslint-disable-next-line no-prototype-builtins
+      } else if (subDatatype.hasOwnProperty("array")) {
+        const new_vec = [];
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        for (const k in deserialized) {
+          if (subDatatype["array"]["value"] !== "string") {
+            new_vec.push(decodeObj2class(new subDatatype["array"]["value"](), value[k]));
+          }
+        }
+        deserialized = new_vec;
+        // eslint-disable-next-line no-prototype-builtins
+      }
+    }
+  }
+  return deserialized;
+}
+function serializeValueWithOptions(value, {
+  serializer
+} = {
+  serializer: serialize
+}) {
+  return serializer(value);
+}
 function serialize(valueToSerialize) {
   return encode(JSON.stringify(valueToSerialize, function (key, value) {
     if (typeof value === "bigint") {
@@ -2317,6 +2399,14 @@ function bytes(s) {
   return env.latin1_string_to_uint8array(s);
 }
 /**
+ * Convert a Uint8Array to string, each uint8 to the single character of that char code
+ * @param a - Uint8Array to convert
+ * @returns result string
+ */
+function str(a) {
+  return env.uint8array_to_latin1_string(a);
+}
+/**
  * Encode the string to Uint8Array with UTF-8 encoding
  * @param s - String to encode
  * @returns result Uint8Array
@@ -2332,6 +2422,11 @@ function encode(s) {
 function decode(a) {
   return env.uint8array_to_utf8_string(a);
 }
+
+/**
+ * One TGas - Tera Gas. 10^12 yoctoNEAR.
+ */
+const ONE_TERA_GAS = 1000000000000n;
 
 var CurveType;
 (function (CurveType) {
@@ -2368,6 +2463,45 @@ var PromiseError;
 const U64_MAX = 2n ** 64n - 1n;
 const EVICTED_REGISTER = U64_MAX - 1n;
 /**
+ * Logs parameters in the NEAR WASM virtual machine.
+ *
+ * @param params - Parameters to log.
+ */
+function log(...params) {
+  env.log(params.reduce((accumulated, parameter, index) => {
+    // Stringify undefined
+    const param = parameter === undefined ? "undefined" : parameter;
+    // Convert Objects to strings and convert to string
+    const stringified = typeof param === "object" ? JSON.stringify(param) : `${param}`;
+    if (index === 0) {
+      return stringified;
+    }
+    return `${accumulated} ${stringified}`;
+  }, ""));
+}
+/**
+ * Returns the account ID of the account that called the function.
+ * Can only be called in a call or initialize function.
+ */
+function predecessorAccountId() {
+  env.predecessor_account_id(0);
+  return str(env.read_register(0));
+}
+/**
+ * Returns the account ID of the current contract - the contract that is being executed.
+ */
+function currentAccountId() {
+  env.current_account_id(0);
+  return str(env.read_register(0));
+}
+/**
+ * Returns the amount of NEAR attached to this function call.
+ * Can only be called in payable functions.
+ */
+function attachedDeposit() {
+  return env.attached_deposit();
+}
+/**
  * Reads the value from NEAR storage that is stored under the provided key.
  *
  * @param key - The key to read from storage.
@@ -2392,6 +2526,34 @@ function storageRead(key) {
   return null;
 }
 /**
+ * Checks for the existance of a value under the provided key in NEAR storage.
+ *
+ * @param key - The key to check for in storage.
+ */
+function storageHasKeyRaw(key) {
+  return env.storage_has_key(key) === 1n;
+}
+/**
+ * Checks for the existance of a value under the provided utf-8 string key in NEAR storage.
+ *
+ * @param key - The utf-8 string key to check for in storage.
+ */
+function storageHasKey(key) {
+  return storageHasKeyRaw(encode(key));
+}
+/**
+ * Get the last written or removed value from NEAR storage.
+ */
+function storageGetEvictedRaw() {
+  return env.read_register(EVICTED_REGISTER);
+}
+/**
+ * Returns the current accounts NEAR storage usage.
+ */
+function storageUsage() {
+  return env.storage_usage();
+}
+/**
  * Writes the provided bytes to NEAR storage under the provided key.
  *
  * @param key - The key under which to store the value.
@@ -2410,6 +2572,22 @@ function storageWrite(key, value) {
   return storageWriteRaw(encode(key), encode(value));
 }
 /**
+ * Removes the value of the provided key from NEAR storage.
+ *
+ * @param key - The key to be removed.
+ */
+function storageRemoveRaw(key) {
+  return env.storage_remove(key, EVICTED_REGISTER) === 1n;
+}
+/**
+ * Removes the value of the provided utf-8 string key from NEAR storage.
+ *
+ * @param key - The utf-8 string key to be removed.
+ */
+function storageRemove(key) {
+  return storageRemoveRaw(encode(key));
+}
+/**
  * Returns the arguments passed to the current smart contract call.
  */
 function inputRaw() {
@@ -2421,6 +2599,124 @@ function inputRaw() {
  */
 function input() {
   return decode(inputRaw());
+}
+
+class SubType {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  /* eslint-disable @typescript-eslint/no-empty-function */
+  subtype() {}
+  set_reconstructor(options) {
+    if (options == undefined) {
+      options = {};
+    }
+    const subtype = this.subtype();
+    if (options.reconstructor == undefined && subtype != undefined) {
+      if (
+      // eslint-disable-next-line no-prototype-builtins
+      subtype.hasOwnProperty("class") && typeof subtype.class.reconstruct === "function") {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        options.reconstructor = subtype.class.reconstruct;
+      } else if (typeof subtype.reconstruct === "function") {
+        options.reconstructor = subtype.reconstruct;
+      }
+    }
+    return options;
+  }
+}
+
+/**
+ * A lookup map that stores data in NEAR storage.
+ */
+class LookupMap extends SubType {
+  /**
+   * @param keyPrefix - The byte prefix to use when storing elements inside this collection.
+   */
+  constructor(keyPrefix) {
+    super();
+    this.keyPrefix = keyPrefix;
+  }
+  /**
+   * Checks whether the collection contains the value.
+   *
+   * @param key - The value for which to check the presence.
+   */
+  containsKey(key) {
+    const storageKey = this.keyPrefix + key;
+    return storageHasKey(storageKey);
+  }
+  /**
+   * Get the data stored at the provided key.
+   *
+   * @param key - The key at which to look for the data.
+   * @param options - Options for retrieving the data.
+   */
+  get(key, options) {
+    const storageKey = this.keyPrefix + key;
+    const value = storageReadRaw(encode(storageKey));
+    if (options == undefined) {
+      options = {};
+    }
+    options = this.set_reconstructor(options);
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Removes and retrieves the element with the provided key.
+   *
+   * @param key - The key at which to remove data.
+   * @param options - Options for retrieving the data.
+   */
+  remove(key, options) {
+    const storageKey = this.keyPrefix + key;
+    if (!storageRemove(storageKey)) {
+      return options?.defaultValue ?? null;
+    }
+    const value = storageGetEvictedRaw();
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Store a new value at the provided key.
+   *
+   * @param key - The key at which to store in the collection.
+   * @param newValue - The value to store in the collection.
+   * @param options - Options for retrieving and storing the data.
+   */
+  set(key, newValue, options) {
+    const storageKey = this.keyPrefix + key;
+    const storageValue = serializeValueWithOptions(newValue, options);
+    if (!storageWriteRaw(encode(storageKey), storageValue)) {
+      return options?.defaultValue ?? null;
+    }
+    const value = storageGetEvictedRaw();
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Extends the current collection with the passed in array of key-value pairs.
+   *
+   * @param keyValuePairs - The key-value pairs to extend the collection with.
+   * @param options - Options for storing the data.
+   */
+  extend(keyValuePairs, options) {
+    for (const [key, value] of keyValuePairs) {
+      this.set(key, value, options);
+    }
+  }
+  /**
+   * Serialize the collection.
+   *
+   * @param options - Options for storing the data.
+   */
+  serialize(options) {
+    return serializeValueWithOptions(this, options);
+  }
+  /**
+   * Converts the deserialized data from storage to a JavaScript instance of the collection.
+   *
+   * @param data - The deserialized data to create an instance from.
+   */
+  static reconstruct(data) {
+    return new LookupMap(data.keyPrefix);
+  }
 }
 
 /**
@@ -2444,6 +2740,26 @@ function view(_empty) {
   return function (_target, _key, _descriptor
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   ) {};
+}
+function call({
+  privateFunction = false,
+  payableFunction = false
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return function (_target, _key, descriptor) {
+    const originalMethod = descriptor.value;
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    descriptor.value = function (...args) {
+      if (privateFunction && predecessorAccountId() !== currentAccountId()) {
+        throw new Error("Function is private");
+      }
+      if (!payableFunction && attachedDeposit() > 0n) {
+        throw new Error("Function is not payable");
+      }
+      return originalMethod.apply(this, args);
+    };
+  };
 }
 function NearBindgen({
   requireInit = false,
@@ -2494,8 +2810,210 @@ function NearBindgen({
   };
 }
 
-var _dec, _dec2, _dec3, _class, _class2;
-let Minter = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = view(), _dec(_class = (_class2 = class Minter {
+function encodeNonStringFields(data) {
+  const encodedData = {};
+  for (const [key, value] of Object.entries(data)) {
+    encodedData[key] = String(value);
+  }
+  return encodedData;
+}
+
+// custom
+
+// metadata
+
+// storage
+
+// lib
+
+// ft-core
+
+// internal
+
+// Events 
+let FTEventKind = /*#__PURE__*/function (FTEventKind) {
+  FTEventKind["mint"] = "ft_mint";
+  FTEventKind["burn"] = "ft_burn";
+  FTEventKind["transfer"] = "ft_transfer";
+  FTEventKind["transfer_call"] = "ft_transfer_call";
+  FTEventKind["resolve_transfer"] = "ft_resolve_transfer";
+  return FTEventKind;
+}({});
+
+class NearEvent {
+  static toJSONString(event) {
+    return JSON.stringify(event);
+  }
+  static toJSONEventString(event) {
+    return `EVENT_JSON:${this.toJSONString(event)}`;
+  }
+  static emit(event) {
+    log(this.toJSONEventString(event));
+  }
+}
+class NearNep141Event {
+  static emit(eventDetails) {
+    NearEvent.emit({
+      standard: "nep141",
+      version: "1.0.0",
+      event: eventDetails.type,
+      data: eventDetails.data.map(record => encodeNonStringFields(record))
+    });
+  }
+}
+class FTMintEvent {
+  static emit(data) {
+    this.emitMany([data]);
+  }
+  static emitMany(data) {
+    NearNep141Event.emit({
+      type: FTEventKind.mint,
+      data
+    });
+  }
+}
+class FTTransferEvent {
+  static emit(data) {
+    this.emitMany([data]);
+  }
+  static emitMany(data) {
+    NearNep141Event.emit({
+      type: FTEventKind.transfer,
+      data
+    });
+  }
+}
+
+// types
+
+const DATA_IMAGE_SVG_FT_ICON = "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiA/PjxzdmcgaWQ9IkxheWVyXzEiIHN0eWxlPSJlbmFibGUtYmFja2dyb3VuZDpuZXcgMCAwIDMyIDMyOyIgdmVyc2lvbj0iMS4xIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHhtbDpzcGFjZT0icHJlc2VydmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiPjxzdHlsZSB0eXBlPSJ0ZXh0L2NzcyI+Cgkuc3Qwe2ZpbGw6I0ZCQzM0RTt9Cgkuc3Qxe2ZpbGw6I0U1QTUzMzt9Cgkuc3Qye2ZpbGw6I0U0RURGMjt9Cjwvc3R5bGU+PGcgaWQ9IlRva2VuIj48Zz48cGF0aCBjbGFzcz0ic3QwIiBkPSJNMTYsMkM4LjI4LDIsMiw4LjI4LDIsMTZzNi4yOCwxNCwxNCwxNHMxNC02LjI4LDE0LTE0UzIzLjcyLDIsMTYsMnogTTE2LDI2Yy01LjUxNCwwLTEwLTQuNDg2LTEwLTEwICAgIFMxMC40ODYsNiwxNiw2czEwLDQuNDg2LDEwLDEwUzIxLjUxNCwyNiwxNiwyNnoiLz48cGF0aCBjbGFzcz0ic3QxIiBkPSJNMTYsNkMxMC40ODYsNiw2LDEwLjQ4Niw2LDE2czQuNDg2LDEwLDEwLDEwczEwLTQuNDg2LDEwLTEwUzIxLjUxNCw2LDE2LDZ6IE0yMC4yNDQsMTcuMjcybC0xLjE1LDAuNjI2ICAgIGMtMC41MDQsMC4yNzUtMC45MTcsMC42ODctMS4xOTMsMS4xOWwtMC42MzEsMS4xNDZjLTAuMjU1LDAuNDY0LTAuNzQxLDAuNzUxLTEuMjcsMC43NTFzLTEuMDE1LTAuMjg4LTEuMjctMC43NTFsLTAuNjMtMS4xNDcgICAgYy0wLjI3Ny0wLjUwNC0wLjY5LTAuOTE2LTEuMTk1LTEuMTkxbC0xLjE0OC0wLjYyNUMxMS4yODksMTcuMDE5LDExLDE2LjUzMSwxMSwxNnMwLjI4OS0xLjAxOSwwLjc1Ni0xLjI3MmwxLjE1LTAuNjI2ICAgIGMwLjUwNC0wLjI3NSwwLjkxNy0wLjY4NywxLjE5My0xLjE5bDAuNjMxLTEuMTQ2YzAuMjU1LTAuNDY0LDAuNzQxLTAuNzUxLDEuMjctMC43NTFzMS4wMTUsMC4yODgsMS4yNywwLjc1MWwwLjYzLDEuMTQ3ICAgIGMwLjI3NywwLjUwMywwLjY5LDAuOTE1LDEuMTk0LDEuMTlsMS4xNDksMC42MjVDMjAuNzExLDE0Ljk4MSwyMSwxNS40NjksMjEsMTZTMjAuNzExLDE3LjAxOSwyMC4yNDQsMTcuMjcyeiIvPjxwYXRoIGNsYXNzPSJzdDIiIGQ9Ik0yMC4yNDMsMTQuNzI3bC0xLjE0OS0wLjYyNWMtMC41MDQtMC4yNzUtMC45MTctMC42ODctMS4xOTQtMS4xOWwtMC42My0xLjE0NyAgICBjLTAuMjU1LTAuNDYzLTAuNzQxLTAuNzUxLTEuMjctMC43NTFzLTEuMDE1LDAuMjg4LTEuMjcsMC43NTFsLTAuNjMsMS4xNDZjLTAuMjc2LDAuNTA0LTAuNjg5LDAuOTE2LTEuMTkzLDEuMTlsLTEuMTUsMC42MjYgICAgQzExLjI4OSwxNC45ODEsMTEsMTUuNDY5LDExLDE2czAuMjg5LDEuMDE5LDAuNzU3LDEuMjczbDEuMTQ4LDAuNjI1YzAuNTA1LDAuMjc1LDAuOTE4LDAuNjg3LDEuMTk1LDEuMTkxbDAuNjMsMS4xNDcgICAgYzAuMjU1LDAuNDYzLDAuNzQxLDAuNzUxLDEuMjcsMC43NTFjMC41MjksMCwxLjAxNS0wLjI4OCwxLjI3LTAuNzUxbDAuNjMxLTEuMTQ2YzAuMjc2LTAuNTA0LDAuNjg5LTAuOTE2LDEuMTkzLTEuMTlsMS4xNS0wLjYyNiAgICBDMjAuNzExLDE3LjAxOSwyMSwxNi41MzEsMjEsMTZTMjAuNzExLDE0Ljk4MSwyMC4yNDMsMTQuNzI3eiIvPjwvZz48L2c+PC9zdmc+";
+BigInt(30) * ONE_TERA_GAS;
+BigInt(300) * ONE_TERA_GAS;
+BigInt(0);
+const DEFAULT_METADATA = {
+  spec: "ft-1.0.0",
+  name: "Justin Case Fungible Token",
+  symbol: "JC-FT",
+  icon: DATA_IMAGE_SVG_FT_ICON,
+  reference: null,
+  reference_hash: null,
+  decimals: 18
+};
+
+var _dec$1, _class$1;
+
+// types
+
+let ContractLibrary = (_dec$1 = NearBindgen({}), _dec$1(_class$1 = class ContractLibrary {
+  /* ==== State ==== */
+  // Keep track of FT contract owner
+  ownerId = "";
+  // Keep track of each account's balances
+  accounts = new LookupMap("accounts");
+  // Total supply of all tokens.
+  total_supply = BigInt(0);
+  // The bytes for the largest possible account ID that can be registered on the contract
+  bytes_for_longest_account_id = BigInt(0);
+  // Metadata for the contract itself
+  metadata = DEFAULT_METADATA;
+
+  /* INTERNAL FUNCTIONS */
+  internal_deposit({
+    account_id,
+    amount
+  }) {
+    //  Get the current balance of the account.  If they're not registered, panic.
+    const balance = this.internal_unwrap_balance_of({
+      account_id
+    });
+
+    // Add the amount to the balance
+    const new_balance = balance + BigInt(amount);
+
+    // insert the new balance into the accounts map
+    // TODO: in the future check for balance overflow errors before depositing
+    this.accounts.set(account_id, new_balance);
+  }
+  internal_withdraw({
+    account_id,
+    amount
+  }) {
+    // Get the current balance of the account. If they're not registered, panic.
+    const balance = this.internal_unwrap_balance_of({
+      account_id
+    });
+
+    // Ensure the account has enough balance to withdraw
+    assert(balance >= amount, "The account doesn't have enough balance");
+
+    // Subtract the amount from the balance
+    const new_balance = balance - BigInt(amount);
+
+    // Insert the new balance into the accounts map
+    this.accounts.set(account_id, new_balance);
+  }
+  internal_transfer({
+    sender_id,
+    receiver_id,
+    amount,
+    memo
+  }) {
+    // Ensure the sender can't transfer to themselves
+    assert(sender_id != receiver_id, "Sender and receiver should be different");
+    // Ensure the sender can't transfer 0 tokens
+    assert(amount > BigInt(0), "The amount should be a positive number");
+
+    // Withdraw from the sender and deposit into the receiver
+    this.internal_withdraw({
+      account_id: sender_id,
+      amount
+    });
+    this.internal_deposit({
+      account_id: receiver_id,
+      amount
+    });
+
+    // Emit the transfer event
+    FTTransferEvent.emit({
+      sender_id,
+      receiver_id,
+      amount,
+      memo
+    });
+  }
+
+  // Internal method for registering an account with the contract.
+  internal_register_account({
+    account_id
+  }) {
+    if (this.accounts.containsKey(account_id)) {
+      throw new Error("The account is already registered.");
+    }
+    // Register the account with a balance of 0
+    this.accounts.set(account_id, BigInt(0));
+  }
+
+  // Internal method for force getting the balance of an account. If the account doesn't have a balance, panic with a custom message.
+  internal_unwrap_balance_of({
+    account_id
+  }) {
+    const balance = this.accounts.get(account_id);
+    if (balance == null) {
+      throw new Error(`The account ${account_id} is not registered.`);
+    }
+    return balance;
+  }
+  measure_bytes_for_longest_account_id() {
+    let initialStorageUsage = storageUsage();
+    let tmpAccountId = "a".repeat(64);
+    this.accounts.set(tmpAccountId, BigInt(0));
+    this.bytes_for_longest_account_id = storageUsage() - initialStorageUsage;
+    this.accounts.remove(tmpAccountId);
+  }
+}) || _class$1);
+
+var _dec, _dec2, _dec3, _dec4, _class, _class2;
+let Minter = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = view(), _dec4 = call({}), _dec(_class = (_class2 = class Minter extends ContractLibrary {
   static OWNER_KEY = 'owner';
   static MONTH_DURATION = 30 * 24 * 60 * 60 * 1000;
   static EMISSIONS_ACCOUNT_KEY = 'emissionsAccount';
@@ -2529,12 +3047,101 @@ let Minter = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = view(), _dec
     }));
   }
 
+  // View function to get the emissions account
   //@ts-ignore
   getEmissionsAccount() {
     const emissionsAccount = storageRead(Minter.EMISSIONS_ACCOUNT_KEY);
     return emissionsAccount ? JSON.parse(emissionsAccount) : null;
   }
-}, _applyDecoratedDescriptor(_class2.prototype, "init", [_dec2], Object.getOwnPropertyDescriptor(_class2.prototype, "init"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "getEmissionsAccount", [_dec3], Object.getOwnPropertyDescriptor(_class2.prototype, "getEmissionsAccount"), _class2.prototype), _class2)) || _class);
+
+  // Calculate emissions and mint tokens
+  //@ts-ignore
+  calculateAndMint() {
+    const emissionsAccountData = storageRead(Minter.EMISSIONS_ACCOUNT_KEY);
+    if (!emissionsAccountData) {
+      throw new Error("Emissions account not initialized.");
+    }
+    const emissionsAccount = JSON.parse(emissionsAccountData);
+    const lootRaffleData = storageRead(Minter.LOOT_RAFFLE_POOL_KEY);
+    if (!lootRaffleData) {
+      throw new Error("Loot Raffle account not initialized.");
+    }
+    const lootRafflePoolAccount = JSON.parse(lootRaffleData);
+    const GlobalTappingData = storageRead(Minter.GLOBAL_TAPPING_POOL_KEY);
+    if (!GlobalTappingData) {
+      throw new Error("Loot Raffle account not initialized.");
+    }
+    const globalTappingPool = JSON.parse(GlobalTappingData);
+    const currentTimestamp = Date.now();
+
+    // Define the duration of a month (30 days in milliseconds)
+    const SECONDS_IN_A_MONTH = Minter.MONTH_DURATION;
+
+    // Check if it’s not the first month
+    if (emissionsAccount.current_month > 0) {
+      // Ensure enough time has passed since the last update
+      if (currentTimestamp < emissionsAccount.lastMintTimestamp + SECONDS_IN_A_MONTH) {
+        throw new Error("Month duration has not yet elapsed");
+      }
+
+      // Reduce emissions based on decay factor
+      emissionsAccount.current_emissions = Math.floor(emissionsAccount.current_emissions * emissionsAccount.decayFactor);
+    }
+
+    // Calculate the amount to mint based on current emissions for this month
+    const amount = BigInt(emissionsAccount.current_emissions * 100_000); // Adjust for decimals if needed
+
+    // Minting logic 
+    // Mint the tokens
+    this.internal_deposit({
+      account_id: Minter.OWNER_KEY,
+      amount: amount
+    });
+
+    // increase the total supply
+    this.total_supply += BigInt(amount);
+
+    // Emit the mint event
+    FTMintEvent.emit({
+      accountId: Minter.OWNER_KEY,
+      amount: amount,
+      memo: "Minter Contract"
+    });
+
+    // Reset tapping pool amount to a fixed monthly value
+    globalTappingPool.amount = 1_000_000_000_00000;
+
+    // Adjust raffle pool amount based on decay and update total
+    if (emissionsAccount.current_month > 0) {
+      lootRafflePoolAccount.amount = Math.floor(lootRafflePoolAccount.amount * emissionsAccount.decayFactor);
+    }
+    lootRafflePoolAccount.total_amount += lootRafflePoolAccount.amount;
+
+    // Update last mint timestamp and increment the month count
+    emissionsAccount.lastMintTimestamp = currentTimestamp;
+    emissionsAccount.current_month += 1;
+
+    // Save the updated accounts back to storage
+    storageWrite(Minter.EMISSIONS_ACCOUNT_KEY, JSON.stringify(emissionsAccount));
+    storageWrite(Minter.LOOT_RAFFLE_POOL_KEY, JSON.stringify(lootRafflePoolAccount));
+    storageWrite(Minter.GLOBAL_TAPPING_POOL_KEY, JSON.stringify(globalTappingPool));
+    return "Minting calculation completed successfully.";
+  }
+}, _applyDecoratedDescriptor(_class2.prototype, "init", [_dec2], Object.getOwnPropertyDescriptor(_class2.prototype, "init"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "getEmissionsAccount", [_dec3], Object.getOwnPropertyDescriptor(_class2.prototype, "getEmissionsAccount"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "calculateAndMint", [_dec4], Object.getOwnPropertyDescriptor(_class2.prototype, "calculateAndMint"), _class2.prototype), _class2)) || _class);
+function calculateAndMint() {
+  const _state = Minter._getState();
+  if (!_state && Minter._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Minter._create();
+  if (_state) {
+    Minter._reconstruct(_contract, _state);
+  }
+  const _args = Minter._getArgs();
+  const _result = _contract.calculateAndMint(_args);
+  Minter._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Minter._serialize(_result, true));
+}
 function getEmissionsAccount() {
   const _state = Minter._getState();
   if (!_state && Minter._requireInit()) {
@@ -2560,5 +3167,5 @@ function init() {
   if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Minter._serialize(_result, true));
 }
 
-export { getEmissionsAccount, init };
+export { calculateAndMint, getEmissionsAccount, init };
 //# sourceMappingURL=minter.js.map

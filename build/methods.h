@@ -1,2 +1,3 @@
+DEFINE_NEAR_METHOD(calculateAndMint)
 DEFINE_NEAR_METHOD(getEmissionsAccount)
 DEFINE_NEAR_METHOD(init)

@@ -6,7 +6,7 @@
     "noImplicitAny": false,
   },
   "files": [
-    "src/contract.ts",
+    "src/FT_contract.ts",
     "src/lib.ts",
   ],
   "exclude": [

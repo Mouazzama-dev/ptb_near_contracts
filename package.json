@@ -8,6 +8,7 @@
     "test": "$npm_execpath run build && ava -- ./build/FT_contract.wasm"
   },
   "dependencies": {
+    "near-api-js": "^5.0.1",
     "near-sdk-js": "2.0.0"
   },
   "devDependencies": {

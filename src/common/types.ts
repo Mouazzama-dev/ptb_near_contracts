@@ -52,6 +52,10 @@ export type NewArgs = {
   metadata: FungibleTokenMetadata;
 };
 
+export type OwnerArgs = {
+  owner_id: AccountId;
+};
+
 export type NewDefaultMetaArgs = {
   owner_id: AccountId;
   total_supply?: Balance;

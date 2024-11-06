@@ -2317,14 +2317,6 @@ function bytes(s) {
   return env.latin1_string_to_uint8array(s);
 }
 /**
- * Convert a Uint8Array to string, each uint8 to the single character of that char code
- * @param a - Uint8Array to convert
- * @returns result string
- */
-function str(a) {
-  return env.uint8array_to_latin1_string(a);
-}
-/**
  * Encode the string to Uint8Array with UTF-8 encoding
  * @param s - String to encode
  * @returns result Uint8Array
@@ -2375,14 +2367,6 @@ var PromiseError;
 
 const U64_MAX = 2n ** 64n - 1n;
 const EVICTED_REGISTER = U64_MAX - 1n;
-/**
- * Returns the account ID of the account that called the function.
- * Can only be called in a call or initialize function.
- */
-function predecessorAccountId() {
-  env.predecessor_account_id(0);
-  return str(env.read_register(0));
-}
 /**
  * Reads the value from NEAR storage that is stored under the provided key.
  *
@@ -2512,23 +2496,21 @@ function NearBindgen({
 
 var _dec, _dec2, _dec3, _class, _class2;
 let Minter = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = view(), _dec(_class = (_class2 = class Minter {
-  static HARD_CODED_OWNER = 'predefined.owner.testnet'; // Replace with the actual owner account ID
+  static OWNER_KEY = 'owner';
   static MONTH_DURATION = 30 * 24 * 60 * 60 * 1000;
   static EMISSIONS_ACCOUNT_KEY = 'emissionsAccount';
   static LOOT_RAFFLE_POOL_KEY = 'lootRafflePool';
   static GLOBAL_TAPPING_POOL_KEY = 'globalTappingPool';
 
-  // Initialize emission and pool accounts; restricted to the hardcoded owner
+  // Initialize emission and pool accounts and set owner
   // @ts-ignore
-  init() {
-    // Only allow the hardcoded owner to initialize the contract
-    this.assertHardCodedOwner();
-
-    // Prevent re-initialization
-    if (storageRead('initialized')) {
+  init({
+    owner_id = Minter.OWNER_KEY
+  }) {
+    if (storageRead(Minter.OWNER_KEY)) {
       throw new Error("Contract is already initialized");
     }
-    storageWrite('initialized', "True");
+    storageWrite(Minter.OWNER_KEY, owner_id);
     storageWrite(Minter.EMISSIONS_ACCOUNT_KEY, JSON.stringify({
       initialEmissions: '3000000000',
       decayFactor: 0.8705505633,
@@ -2547,17 +2529,8 @@ let Minter = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = view(), _dec
     }));
   }
 
-  // Assertion to ensure the caller is the hardcoded owner
-  assertHardCodedOwner() {
-    if (predecessorAccountId() !== Minter.HARD_CODED_OWNER) {
-      throw new Error("Only the designated owner can perform this action");
-    }
-  }
-
-  // Example of a function using the assertHardCodedOwner check
   //@ts-ignore
   getEmissionsAccount() {
-    this.assertHardCodedOwner(); // Restrict access to the hardcoded owner
     const emissionsAccount = storageRead(Minter.EMISSIONS_ACCOUNT_KEY);
     return emissionsAccount ? JSON.parse(emissionsAccount) : null;
   }

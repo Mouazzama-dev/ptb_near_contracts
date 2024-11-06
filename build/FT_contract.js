@@ -2216,6 +2216,88 @@ var TypeBrand;
   TypeBrand["BIGINT"] = "bigint";
   TypeBrand["DATE"] = "date";
 })(TypeBrand || (TypeBrand = {}));
+/**
+ * Asserts that the expression passed to the function is truthy, otherwise throws a new Error with the provided message.
+ *
+ * @param expression - The expression to be asserted.
+ * @param message - The error message to be printed.
+ */
+function assert(expression, message) {
+  if (!expression) {
+    throw new Error("assertion failed: " + message);
+  }
+}
+function getValueWithOptions(subDatatype, value, options = {
+  deserializer: deserialize
+}) {
+  if (value === null) {
+    return options?.defaultValue ?? null;
+  }
+  // here is an obj
+  let deserialized = deserialize(value);
+  if (deserialized === undefined || deserialized === null) {
+    return options?.defaultValue ?? null;
+  }
+  if (options?.reconstructor) {
+    // example: // { collection: {reconstructor: LookupMap.reconstruct, value: 'string'}}
+    const collection = options.reconstructor(deserialized);
+    if (subDatatype !== undefined &&
+    // eslint-disable-next-line no-prototype-builtins
+    subDatatype.hasOwnProperty("class") &&
+    // eslint-disable-next-line no-prototype-builtins
+    subDatatype["class"].hasOwnProperty("value")) {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      collection.subtype = function () {
+        // example: {class: UnorderedMap, value: UnorderedMap}
+        return subDatatype["class"]["value"];
+      };
+    }
+    return collection;
+  }
+  // example: { collection: {reconstructor: LookupMap.reconstruct, value: 'string'}}
+  if (subDatatype !== undefined) {
+    // subtype info is a class constructor, Such as Car
+    if (typeof subDatatype === "function") {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      deserialized = decodeObj2class(new subDatatype(), deserialized);
+    } else if (typeof subDatatype === "object") {
+      // normal collections of array, map; subtype will be:
+      //  {map: { key: 'string', value: 'string' }} or {array: {value: 'string'}} ..
+      // eslint-disable-next-line no-prototype-builtins
+      if (subDatatype.hasOwnProperty("map")) {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        for (const mkey in deserialized) {
+          if (subDatatype["map"]["value"] !== "string") {
+            deserialized[mkey] = decodeObj2class(new subDatatype["map"]["value"](), value[mkey]);
+          }
+        }
+        // eslint-disable-next-line no-prototype-builtins
+      } else if (subDatatype.hasOwnProperty("array")) {
+        const new_vec = [];
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        for (const k in deserialized) {
+          if (subDatatype["array"]["value"] !== "string") {
+            new_vec.push(decodeObj2class(new subDatatype["array"]["value"](), value[k]));
+          }
+        }
+        deserialized = new_vec;
+        // eslint-disable-next-line no-prototype-builtins
+      }
+    }
+  }
+  return deserialized;
+}
+function serializeValueWithOptions(value, {
+  serializer
+} = {
+  serializer: serialize
+}) {
+  return serializer(value);
+}
 function serialize(valueToSerialize) {
   return encode(JSON.stringify(valueToSerialize, function (key, value) {
     if (typeof value === "bigint") {
@@ -2341,6 +2423,16 @@ function decode(a) {
   return env.uint8array_to_utf8_string(a);
 }
 
+/**
+ * One TGas - Tera Gas. 10^12 yoctoNEAR.
+ */
+const ONE_TERA_GAS = 1000000000000n;
+
+/**
+ * One yoctoNEAR. 10^-24 NEAR.
+ */
+const ONE_YOCTO = 1n;
+
 var CurveType;
 (function (CurveType) {
   CurveType[CurveType["ED25519"] = 0] = "ED25519";
@@ -2393,6 +2485,14 @@ function log(...params) {
   }, ""));
 }
 /**
+ * Returns the account ID of the account that signed the transaction.
+ * Can only be called in a call or initialize function.
+ */
+function signerAccountId() {
+  env.signer_account_id(0);
+  return str(env.read_register(0));
+}
+/**
  * Returns the account ID of the account that called the function.
  * Can only be called in a call or initialize function.
  */
@@ -2427,6 +2527,34 @@ function storageReadRaw(key) {
   return env.read_register(0);
 }
 /**
+ * Checks for the existance of a value under the provided key in NEAR storage.
+ *
+ * @param key - The key to check for in storage.
+ */
+function storageHasKeyRaw(key) {
+  return env.storage_has_key(key) === 1n;
+}
+/**
+ * Checks for the existance of a value under the provided utf-8 string key in NEAR storage.
+ *
+ * @param key - The utf-8 string key to check for in storage.
+ */
+function storageHasKey(key) {
+  return storageHasKeyRaw(encode(key));
+}
+/**
+ * Get the last written or removed value from NEAR storage.
+ */
+function storageGetEvictedRaw() {
+  return env.read_register(EVICTED_REGISTER);
+}
+/**
+ * Returns the current accounts NEAR storage usage.
+ */
+function storageUsage() {
+  return env.storage_usage();
+}
+/**
  * Writes the provided bytes to NEAR storage under the provided key.
  *
  * @param key - The key under which to store the value.
@@ -2434,6 +2562,28 @@ function storageReadRaw(key) {
  */
 function storageWriteRaw(key, value) {
   return env.storage_write(key, value, EVICTED_REGISTER) === 1n;
+}
+/**
+ * Removes the value of the provided key from NEAR storage.
+ *
+ * @param key - The key to be removed.
+ */
+function storageRemoveRaw(key) {
+  return env.storage_remove(key, EVICTED_REGISTER) === 1n;
+}
+/**
+ * Removes the value of the provided utf-8 string key from NEAR storage.
+ *
+ * @param key - The utf-8 string key to be removed.
+ */
+function storageRemove(key) {
+  return storageRemoveRaw(encode(key));
+}
+/**
+ * Returns the cost of storing 0 Byte on NEAR storage.
+ */
+function storageByteCost() {
+  return 10000000000000000000n;
 }
 /**
  * Returns the arguments passed to the current smart contract call.
@@ -2448,7 +2598,314 @@ function inputRaw() {
 function input() {
   return decode(inputRaw());
 }
+/**
+ * Join an arbitrary array of NEAR promises.
+ *
+ * @param promiseIndexes - An arbitrary array of NEAR promise indexes to join.
+ */
+function promiseAnd(...promiseIndexes) {
+  return env.promise_and(...promiseIndexes);
+}
+/**
+ * Create a NEAR promise which will have multiple promise actions inside.
+ *
+ * @param accountId - The account ID of the target contract.
+ */
+function promiseBatchCreate(accountId) {
+  return env.promise_batch_create(accountId);
+}
+/**
+ * Attach a callback NEAR promise to a batch of NEAR promise actions.
+ *
+ * @param promiseIndex - The NEAR promise index of the batch.
+ * @param accountId - The account ID of the target contract.
+ */
+function promiseBatchThen(promiseIndex, accountId) {
+  return env.promise_batch_then(promiseIndex, accountId);
+}
+/**
+ * Attach a create account promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a create account action to.
+ */
+function promiseBatchActionCreateAccount(promiseIndex) {
+  env.promise_batch_action_create_account(promiseIndex);
+}
+/**
+ * Attach a deploy contract promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a deploy contract action to.
+ * @param code - The WASM byte code of the contract to be deployed.
+ */
+function promiseBatchActionDeployContract(promiseIndex, code) {
+  env.promise_batch_action_deploy_contract(promiseIndex, code);
+}
+/**
+ * Attach a function call promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a function call action to.
+ * @param methodName - The name of the method to be called.
+ * @param args - The arguments to call the method with.
+ * @param amount - The amount of NEAR to attach to the call.
+ * @param gas - The amount of Gas to attach to the call.
+ */
+function promiseBatchActionFunctionCallRaw(promiseIndex, methodName, args, amount, gas) {
+  env.promise_batch_action_function_call(promiseIndex, methodName, args, amount, gas);
+}
+/**
+ * Attach a function call promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a function call action to.
+ * @param methodName - The name of the method to be called.
+ * @param args - The utf-8 string arguments to call the method with.
+ * @param amount - The amount of NEAR to attach to the call.
+ * @param gas - The amount of Gas to attach to the call.
+ */
+function promiseBatchActionFunctionCall(promiseIndex, methodName, args, amount, gas) {
+  promiseBatchActionFunctionCallRaw(promiseIndex, methodName, encode(args), amount, gas);
+}
+/**
+ * Attach a transfer promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a transfer action to.
+ * @param amount - The amount of NEAR to transfer.
+ */
+function promiseBatchActionTransfer(promiseIndex, amount) {
+  env.promise_batch_action_transfer(promiseIndex, amount);
+}
+/**
+ * Attach a stake promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a stake action to.
+ * @param amount - The amount of NEAR to stake.
+ * @param publicKey - The public key with which to stake.
+ */
+function promiseBatchActionStake(promiseIndex, amount, publicKey) {
+  env.promise_batch_action_stake(promiseIndex, amount, publicKey);
+}
+/**
+ * Attach a add full access key promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a add full access key action to.
+ * @param publicKey - The public key to add as a full access key.
+ * @param nonce - The nonce to use.
+ */
+function promiseBatchActionAddKeyWithFullAccess(promiseIndex, publicKey, nonce) {
+  env.promise_batch_action_add_key_with_full_access(promiseIndex, publicKey, nonce);
+}
+/**
+ * Attach a add access key promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a add access key action to.
+ * @param publicKey - The public key to add.
+ * @param nonce - The nonce to use.
+ * @param allowance - The allowance of the access key.
+ * @param receiverId - The account ID of the receiver.
+ * @param methodNames - The names of the method to allow the key for.
+ */
+function promiseBatchActionAddKeyWithFunctionCall(promiseIndex, publicKey, nonce, allowance, receiverId, methodNames) {
+  env.promise_batch_action_add_key_with_function_call(promiseIndex, publicKey, nonce, allowance, receiverId, methodNames);
+}
+/**
+ * Attach a delete key promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a delete key action to.
+ * @param publicKey - The public key to delete.
+ */
+function promiseBatchActionDeleteKey(promiseIndex, publicKey) {
+  env.promise_batch_action_delete_key(promiseIndex, publicKey);
+}
+/**
+ * Attach a delete account promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a delete account action to.
+ * @param beneficiaryId - The account ID of the beneficiary - the account that receives the remaining amount of NEAR.
+ */
+function promiseBatchActionDeleteAccount(promiseIndex, beneficiaryId) {
+  env.promise_batch_action_delete_account(promiseIndex, beneficiaryId);
+}
+/**
+ * Attach a function call with weight promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a function call with weight action to.
+ * @param methodName - The name of the method to be called.
+ * @param args - The arguments to call the method with.
+ * @param amount - The amount of NEAR to attach to the call.
+ * @param gas - The amount of Gas to attach to the call.
+ * @param weight - The weight of unused Gas to use.
+ */
+function promiseBatchActionFunctionCallWeightRaw(promiseIndex, methodName, args, amount, gas, weight) {
+  env.promise_batch_action_function_call_weight(promiseIndex, methodName, args, amount, gas, weight);
+}
+/**
+ * Attach a function call with weight promise action to the NEAR promise index with the provided promise index.
+ *
+ * @param promiseIndex - The index of the promise to attach a function call with weight action to.
+ * @param methodName - The name of the method to be called.
+ * @param args - The utf-8 string arguments to call the method with.
+ * @param amount - The amount of NEAR to attach to the call.
+ * @param gas - The amount of Gas to attach to the call.
+ * @param weight - The weight of unused Gas to use.
+ */
+function promiseBatchActionFunctionCallWeight(promiseIndex, methodName, args, amount, gas, weight) {
+  promiseBatchActionFunctionCallWeightRaw(promiseIndex, methodName, encode(args), amount, gas, weight);
+}
+/**
+ * Returns the result of the NEAR promise for the passed promise index.
+ *
+ * @param promiseIndex - The index of the promise to return the result for.
+ */
+function promiseResultRaw(promiseIndex) {
+  const status = env.promise_result(promiseIndex, 0);
+  assert(Number(status) === PromiseResult.Successful, `Promise result ${status == PromiseResult.Failed ? "Failed" : status == PromiseResult.NotReady ? "NotReady" : status}`);
+  return env.read_register(0);
+}
+/**
+ * Returns the result of the NEAR promise for the passed promise index as utf-8 string
+ *
+ * @param promiseIndex - The index of the promise to return the result for.
+ */
+function promiseResult$1(promiseIndex) {
+  return decode(promiseResultRaw(promiseIndex));
+}
+/**
+ * Executes the promise in the NEAR WASM virtual machine.
+ *
+ * @param promiseIndex - The index of the promise to execute.
+ */
+function promiseReturn(promiseIndex) {
+  env.promise_return(promiseIndex);
+}
 
+class SubType {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  /* eslint-disable @typescript-eslint/no-empty-function */
+  subtype() {}
+  set_reconstructor(options) {
+    if (options == undefined) {
+      options = {};
+    }
+    const subtype = this.subtype();
+    if (options.reconstructor == undefined && subtype != undefined) {
+      if (
+      // eslint-disable-next-line no-prototype-builtins
+      subtype.hasOwnProperty("class") && typeof subtype.class.reconstruct === "function") {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        options.reconstructor = subtype.class.reconstruct;
+      } else if (typeof subtype.reconstruct === "function") {
+        options.reconstructor = subtype.reconstruct;
+      }
+    }
+    return options;
+  }
+}
+
+/**
+ * A lookup map that stores data in NEAR storage.
+ */
+class LookupMap extends SubType {
+  /**
+   * @param keyPrefix - The byte prefix to use when storing elements inside this collection.
+   */
+  constructor(keyPrefix) {
+    super();
+    this.keyPrefix = keyPrefix;
+  }
+  /**
+   * Checks whether the collection contains the value.
+   *
+   * @param key - The value for which to check the presence.
+   */
+  containsKey(key) {
+    const storageKey = this.keyPrefix + key;
+    return storageHasKey(storageKey);
+  }
+  /**
+   * Get the data stored at the provided key.
+   *
+   * @param key - The key at which to look for the data.
+   * @param options - Options for retrieving the data.
+   */
+  get(key, options) {
+    const storageKey = this.keyPrefix + key;
+    const value = storageReadRaw(encode(storageKey));
+    if (options == undefined) {
+      options = {};
+    }
+    options = this.set_reconstructor(options);
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Removes and retrieves the element with the provided key.
+   *
+   * @param key - The key at which to remove data.
+   * @param options - Options for retrieving the data.
+   */
+  remove(key, options) {
+    const storageKey = this.keyPrefix + key;
+    if (!storageRemove(storageKey)) {
+      return options?.defaultValue ?? null;
+    }
+    const value = storageGetEvictedRaw();
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Store a new value at the provided key.
+   *
+   * @param key - The key at which to store in the collection.
+   * @param newValue - The value to store in the collection.
+   * @param options - Options for retrieving and storing the data.
+   */
+  set(key, newValue, options) {
+    const storageKey = this.keyPrefix + key;
+    const storageValue = serializeValueWithOptions(newValue, options);
+    if (!storageWriteRaw(encode(storageKey), storageValue)) {
+      return options?.defaultValue ?? null;
+    }
+    const value = storageGetEvictedRaw();
+    return getValueWithOptions(this.subtype(), value, options);
+  }
+  /**
+   * Extends the current collection with the passed in array of key-value pairs.
+   *
+   * @param keyValuePairs - The key-value pairs to extend the collection with.
+   * @param options - Options for storing the data.
+   */
+  extend(keyValuePairs, options) {
+    for (const [key, value] of keyValuePairs) {
+      this.set(key, value, options);
+    }
+  }
+  /**
+   * Serialize the collection.
+   *
+   * @param options - Options for storing the data.
+   */
+  serialize(options) {
+    return serializeValueWithOptions(this, options);
+  }
+  /**
+   * Converts the deserialized data from storage to a JavaScript instance of the collection.
+   *
+   * @param data - The deserialized data to create an instance from.
+   */
+  static reconstruct(data) {
+    return new LookupMap(data.keyPrefix);
+  }
+}
+
+/**
+ * Tells the SDK to use this function as the initialization function of the contract.
+ *
+ * @param _empty - An empty object.
+ */
+function initialize(_empty) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return function (_target, _key, _descriptor
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  ) {};
+}
 /**
  * Tells the SDK to expose this function as a view function.
  *
@@ -2529,51 +2986,1254 @@ function NearBindgen({
   };
 }
 
-var _dec, _dec2, _dec3, _class, _class2;
-let HelloNear = (_dec = NearBindgen({}), _dec2 = view(), _dec3 = call({}), _dec(_class = (_class2 = class HelloNear {
-  static schema = {
-    greeting: 'string'
-  };
-  greeting = 'Hello';
-  // This method is read-only and can be called for free
-  get_greeting() {
-    return this.greeting;
+/**
+ * A promise action which can be executed on the NEAR blockchain.
+ */
+class PromiseAction {}
+/**
+ * A create account promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class CreateAccount extends PromiseAction {
+  add(promiseIndex) {
+    promiseBatchActionCreateAccount(promiseIndex);
   }
-  // This method changes the state, for which it cost gas
-  set_greeting({
-    greeting
-  }) {
-    log(`Saving greeting ${greeting}`);
-    this.greeting = greeting;
-  }
-}, _applyDecoratedDescriptor(_class2.prototype, "get_greeting", [_dec2], Object.getOwnPropertyDescriptor(_class2.prototype, "get_greeting"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "set_greeting", [_dec3], Object.getOwnPropertyDescriptor(_class2.prototype, "set_greeting"), _class2.prototype), _class2)) || _class);
-function set_greeting() {
-  const _state = HelloNear._getState();
-  if (!_state && HelloNear._requireInit()) {
-    throw new Error("Contract must be initialized");
-  }
-  const _contract = HelloNear._create();
-  if (_state) {
-    HelloNear._reconstruct(_contract, _state);
-  }
-  const _args = HelloNear._getArgs();
-  const _result = _contract.set_greeting(_args);
-  HelloNear._saveToStorage(_contract);
-  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(HelloNear._serialize(_result, true));
 }
-function get_greeting() {
-  const _state = HelloNear._getState();
-  if (!_state && HelloNear._requireInit()) {
-    throw new Error("Contract must be initialized");
+/**
+ * A deploy contract promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class DeployContract extends PromiseAction {
+  /**
+   * @param code - The code of the contract to be deployed.
+   */
+  constructor(code) {
+    super();
+    this.code = code;
   }
-  const _contract = HelloNear._create();
-  if (_state) {
-    HelloNear._reconstruct(_contract, _state);
+  add(promiseIndex) {
+    promiseBatchActionDeployContract(promiseIndex, this.code);
   }
-  const _args = HelloNear._getArgs();
-  const _result = _contract.get_greeting(_args);
-  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(HelloNear._serialize(_result, true));
+}
+/**
+ * A function call promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class FunctionCall extends PromiseAction {
+  /**
+   * @param functionName - The name of the function to be called.
+   * @param args - The utf-8 string arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   */
+  constructor(functionName, args, amount, gas) {
+    super();
+    this.functionName = functionName;
+    this.args = args;
+    this.amount = amount;
+    this.gas = gas;
+  }
+  add(promiseIndex) {
+    promiseBatchActionFunctionCall(promiseIndex, this.functionName, this.args, this.amount, this.gas);
+  }
+}
+/**
+ * A function call raw promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class FunctionCallRaw extends PromiseAction {
+  /**
+   * @param functionName - The name of the function to be called.
+   * @param args - The arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   */
+  constructor(functionName, args, amount, gas) {
+    super();
+    this.functionName = functionName;
+    this.args = args;
+    this.amount = amount;
+    this.gas = gas;
+  }
+  add(promiseIndex) {
+    promiseBatchActionFunctionCallRaw(promiseIndex, this.functionName, this.args, this.amount, this.gas);
+  }
+}
+/**
+ * A function call weight promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class FunctionCallWeight extends PromiseAction {
+  /**
+   * @param functionName - The name of the function to be called.
+   * @param args - The utf-8 string arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   * @param weight - The weight of unused Gas to use.
+   */
+  constructor(functionName, args, amount, gas, weight) {
+    super();
+    this.functionName = functionName;
+    this.args = args;
+    this.amount = amount;
+    this.gas = gas;
+    this.weight = weight;
+  }
+  add(promiseIndex) {
+    promiseBatchActionFunctionCallWeight(promiseIndex, this.functionName, this.args, this.amount, this.gas, this.weight);
+  }
+}
+/**
+ * A function call weight raw promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class FunctionCallWeightRaw extends PromiseAction {
+  /**
+   * @param functionName - The name of the function to be called.
+   * @param args - The arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   * @param weight - The weight of unused Gas to use.
+   */
+  constructor(functionName, args, amount, gas, weight) {
+    super();
+    this.functionName = functionName;
+    this.args = args;
+    this.amount = amount;
+    this.gas = gas;
+    this.weight = weight;
+  }
+  add(promiseIndex) {
+    promiseBatchActionFunctionCallWeightRaw(promiseIndex, this.functionName, this.args, this.amount, this.gas, this.weight);
+  }
+}
+/**
+ * A transfer promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class Transfer extends PromiseAction {
+  /**
+   * @param amount - The amount of NEAR to tranfer.
+   */
+  constructor(amount) {
+    super();
+    this.amount = amount;
+  }
+  add(promiseIndex) {
+    promiseBatchActionTransfer(promiseIndex, this.amount);
+  }
+}
+/**
+ * A stake promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class Stake extends PromiseAction {
+  /**
+   * @param amount - The amount of NEAR to tranfer.
+   * @param publicKey - The public key to use for staking.
+   */
+  constructor(amount, publicKey) {
+    super();
+    this.amount = amount;
+    this.publicKey = publicKey;
+  }
+  add(promiseIndex) {
+    promiseBatchActionStake(promiseIndex, this.amount, this.publicKey.data);
+  }
+}
+/**
+ * A add full access key promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class AddFullAccessKey extends PromiseAction {
+  /**
+   * @param publicKey - The public key to add as a full access key.
+   * @param nonce - The nonce to use.
+   */
+  constructor(publicKey, nonce) {
+    super();
+    this.publicKey = publicKey;
+    this.nonce = nonce;
+  }
+  add(promiseIndex) {
+    promiseBatchActionAddKeyWithFullAccess(promiseIndex, this.publicKey.data, this.nonce);
+  }
+}
+/**
+ * A add access key promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class AddAccessKey extends PromiseAction {
+  /**
+   * @param publicKey - The public key to add as a access key.
+   * @param allowance - The allowance for the key in yoctoNEAR.
+   * @param receiverId - The account ID of the receiver.
+   * @param functionNames - The names of funcitons to authorize.
+   * @param nonce - The nonce to use.
+   */
+  constructor(publicKey, allowance, receiverId, functionNames, nonce) {
+    super();
+    this.publicKey = publicKey;
+    this.allowance = allowance;
+    this.receiverId = receiverId;
+    this.functionNames = functionNames;
+    this.nonce = nonce;
+  }
+  add(promiseIndex) {
+    promiseBatchActionAddKeyWithFunctionCall(promiseIndex, this.publicKey.data, this.nonce, this.allowance, this.receiverId, this.functionNames);
+  }
+}
+/**
+ * A delete key promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class DeleteKey extends PromiseAction {
+  /**
+   * @param publicKey - The public key to delete from the account.
+   */
+  constructor(publicKey) {
+    super();
+    this.publicKey = publicKey;
+  }
+  add(promiseIndex) {
+    promiseBatchActionDeleteKey(promiseIndex, this.publicKey.data);
+  }
+}
+/**
+ * A delete account promise action.
+ *
+ * @extends {PromiseAction}
+ */
+class DeleteAccount extends PromiseAction {
+  /**
+   * @param beneficiaryId - The beneficiary of the account deletion - the account to recieve all of the remaining funds of the deleted account.
+   */
+  constructor(beneficiaryId) {
+    super();
+    this.beneficiaryId = beneficiaryId;
+  }
+  add(promiseIndex) {
+    promiseBatchActionDeleteAccount(promiseIndex, this.beneficiaryId);
+  }
+}
+class PromiseSingle {
+  constructor(accountId, actions, after, promiseIndex) {
+    this.accountId = accountId;
+    this.actions = actions;
+    this.after = after;
+    this.promiseIndex = promiseIndex;
+  }
+  constructRecursively() {
+    if (this.promiseIndex !== null) {
+      return this.promiseIndex;
+    }
+    const promiseIndex = this.after ? promiseBatchThen(this.after.constructRecursively(), this.accountId) : promiseBatchCreate(this.accountId);
+    this.actions.forEach(action => action.add(promiseIndex));
+    this.promiseIndex = promiseIndex;
+    return promiseIndex;
+  }
+}
+class PromiseJoint {
+  constructor(promiseA, promiseB, promiseIndex) {
+    this.promiseA = promiseA;
+    this.promiseB = promiseB;
+    this.promiseIndex = promiseIndex;
+  }
+  constructRecursively() {
+    if (this.promiseIndex !== null) {
+      return this.promiseIndex;
+    }
+    const result = promiseAnd(this.promiseA.constructRecursively(), this.promiseB.constructRecursively());
+    this.promiseIndex = result;
+    return result;
+  }
+}
+/**
+ * A high level class to construct and work with NEAR promises.
+ */
+class NearPromise {
+  /**
+   * @param subtype - The subtype of the promise.
+   * @param shouldReturn - Whether the promise should return.
+   */
+  constructor(subtype, shouldReturn) {
+    this.subtype = subtype;
+    this.shouldReturn = shouldReturn;
+  }
+  /**
+   * Creates a new promise to the provided account ID.
+   *
+   * @param accountId - The account ID on which to call the promise.
+   */
+  static new(accountId) {
+    const subtype = new PromiseSingle(accountId, [], null, null);
+    return new NearPromise(subtype, false);
+  }
+  addAction(action) {
+    if (this.subtype instanceof PromiseJoint) {
+      throw new Error("Cannot add action to a joint promise.");
+    }
+    this.subtype.actions.push(action);
+    return this;
+  }
+  /**
+   * Creates a create account promise action and adds it to the current promise.
+   */
+  createAccount() {
+    return this.addAction(new CreateAccount());
+  }
+  /**
+   * Creates a deploy contract promise action and adds it to the current promise.
+   *
+   * @param code - The code of the contract to be deployed.
+   */
+  deployContract(code) {
+    return this.addAction(new DeployContract(code));
+  }
+  /**
+   * Creates a function call promise action and adds it to the current promise.
+   *
+   * @param functionName - The name of the function to be called.
+   * @param args - The utf-8 string arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   */
+  functionCall(functionName, args, amount, gas) {
+    return this.addAction(new FunctionCall(functionName, args, amount, gas));
+  }
+  /**
+   * Creates a function call raw promise action and adds it to the current promise.
+   *
+   * @param functionName - The name of the function to be called.
+   * @param args - The arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   */
+  functionCallRaw(functionName, args, amount, gas) {
+    return this.addAction(new FunctionCallRaw(functionName, args, amount, gas));
+  }
+  /**
+   * Creates a function call weight promise action and adds it to the current promise.
+   *
+   * @param functionName - The name of the function to be called.
+   * @param args - The utf-8 string arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   * @param weight - The weight of unused Gas to use.
+   */
+  functionCallWeight(functionName, args, amount, gas, weight) {
+    return this.addAction(new FunctionCallWeight(functionName, args, amount, gas, weight));
+  }
+  /**
+   * Creates a function call weight raw promise action and adds it to the current promise.
+   *
+   * @param functionName - The name of the function to be called.
+   * @param args - The arguments to be passed to the function.
+   * @param amount - The amount of NEAR to attach to the call.
+   * @param gas - The amount of Gas to attach to the call.
+   * @param weight - The weight of unused Gas to use.
+   */
+  functionCallWeightRaw(functionName, args, amount, gas, weight) {
+    return this.addAction(new FunctionCallWeightRaw(functionName, args, amount, gas, weight));
+  }
+  /**
+   * Creates a transfer promise action and adds it to the current promise.
+   *
+   * @param amount - The amount of NEAR to tranfer.
+   */
+  transfer(amount) {
+    return this.addAction(new Transfer(amount));
+  }
+  /**
+   * Creates a stake promise action and adds it to the current promise.
+   *
+   * @param amount - The amount of NEAR to tranfer.
+   * @param publicKey - The public key to use for staking.
+   */
+  stake(amount, publicKey) {
+    return this.addAction(new Stake(amount, publicKey));
+  }
+  /**
+   * Creates a add full access key promise action and adds it to the current promise.
+   * Uses 0n as the nonce.
+   *
+   * @param publicKey - The public key to add as a full access key.
+   */
+  addFullAccessKey(publicKey) {
+    return this.addFullAccessKeyWithNonce(publicKey, 0n);
+  }
+  /**
+   * Creates a add full access key promise action and adds it to the current promise.
+   * Allows you to specify the nonce.
+   *
+   * @param publicKey - The public key to add as a full access key.
+   * @param nonce - The nonce to use.
+   */
+  addFullAccessKeyWithNonce(publicKey, nonce) {
+    return this.addAction(new AddFullAccessKey(publicKey, nonce));
+  }
+  /**
+   * Creates a add access key promise action and adds it to the current promise.
+   * Uses 0n as the nonce.
+   *
+   * @param publicKey - The public key to add as a access key.
+   * @param allowance - The allowance for the key in yoctoNEAR.
+   * @param receiverId - The account ID of the receiver.
+   * @param functionNames - The names of funcitons to authorize.
+   */
+  addAccessKey(publicKey, allowance, receiverId, functionNames) {
+    return this.addAccessKeyWithNonce(publicKey, allowance, receiverId, functionNames, 0n);
+  }
+  /**
+   * Creates a add access key promise action and adds it to the current promise.
+   * Allows you to specify the nonce.
+   *
+   * @param publicKey - The public key to add as a access key.
+   * @param allowance - The allowance for the key in yoctoNEAR.
+   * @param receiverId - The account ID of the receiver.
+   * @param functionNames - The names of funcitons to authorize.
+   * @param nonce - The nonce to use.
+   */
+  addAccessKeyWithNonce(publicKey, allowance, receiverId, functionNames, nonce) {
+    return this.addAction(new AddAccessKey(publicKey, allowance, receiverId, functionNames, nonce));
+  }
+  /**
+   * Creates a delete key promise action and adds it to the current promise.
+   *
+   * @param publicKey - The public key to delete from the account.
+   */
+  deleteKey(publicKey) {
+    return this.addAction(new DeleteKey(publicKey));
+  }
+  /**
+   * Creates a delete account promise action and adds it to the current promise.
+   *
+   * @param beneficiaryId - The beneficiary of the account deletion - the account to recieve all of the remaining funds of the deleted account.
+   */
+  deleteAccount(beneficiaryId) {
+    return this.addAction(new DeleteAccount(beneficiaryId));
+  }
+  /**
+   * Joins the provided promise with the current promise, making the current promise a joint promise subtype.
+   *
+   * @param other - The promise to join with the current promise.
+   */
+  and(other) {
+    const subtype = new PromiseJoint(this, other, null);
+    return new NearPromise(subtype, false);
+  }
+  /**
+   * Adds a callback to the current promise.
+   *
+   * @param other - The promise to be executed as the promise.
+   */
+  then(other) {
+    assert(other.subtype instanceof PromiseSingle, "Cannot callback joint promise.");
+    assert(other.subtype.after === null, "Cannot callback promise which is already scheduled after another");
+    other.subtype.after = this;
+    return other;
+  }
+  /**
+   * Sets the shouldReturn field to true.
+   */
+  asReturn() {
+    this.shouldReturn = true;
+    return this;
+  }
+  /**
+   * Recursively goes through the current promise to get the promise index.
+   */
+  constructRecursively() {
+    const result = this.subtype.constructRecursively();
+    if (this.shouldReturn) {
+      promiseReturn(result);
+    }
+    return result;
+  }
+  /**
+   * Called by NearBindgen, when return object is a NearPromise instance.
+   */
+  onReturn() {
+    this.asReturn().constructRecursively();
+  }
+  /**
+   * Attach the promise to transaction but does not return it. The promise will be executed, but
+   * whether it success or not will not affect the transaction result. If you want the promise fail
+   * also makes the transaction fail, you can simply return the promise from a @call method.
+   */
+  build() {
+    return this.constructRecursively();
+  }
 }
 
-export { get_greeting, set_greeting };
-//# sourceMappingURL=hello_near.js.map
+function encodeNonStringFields(data) {
+  const encodedData = {};
+  for (const [key, value] of Object.entries(data)) {
+    encodedData[key] = String(value);
+  }
+  return encodedData;
+}
+function promiseResult() {
+  let result, success;
+  try {
+    result = promiseResult$1(0);
+    success = true;
+  } catch {
+    result = undefined;
+    success = false;
+  }
+  return {
+    result,
+    success
+  };
+}
+function findMinValue(...numbers) {
+  return numbers.reduce((min, current) => current < min ? current : min, numbers[0]);
+}
+
+// custom
+
+// metadata
+
+// storage
+
+// lib
+
+// ft-core
+
+// internal
+
+// Events 
+let FTEventKind = /*#__PURE__*/function (FTEventKind) {
+  FTEventKind["mint"] = "ft_mint";
+  FTEventKind["burn"] = "ft_burn";
+  FTEventKind["transfer"] = "ft_transfer";
+  FTEventKind["transfer_call"] = "ft_transfer_call";
+  FTEventKind["resolve_transfer"] = "ft_resolve_transfer";
+  return FTEventKind;
+}({});
+
+class NearEvent {
+  static toJSONString(event) {
+    return JSON.stringify(event);
+  }
+  static toJSONEventString(event) {
+    return `EVENT_JSON:${this.toJSONString(event)}`;
+  }
+  static emit(event) {
+    log(this.toJSONEventString(event));
+  }
+}
+class NearNep141Event {
+  static emit(eventDetails) {
+    NearEvent.emit({
+      standard: "nep141",
+      version: "1.0.0",
+      event: eventDetails.type,
+      data: eventDetails.data.map(record => encodeNonStringFields(record))
+    });
+  }
+}
+class FTMintEvent {
+  static emit(data) {
+    this.emitMany([data]);
+  }
+  static emitMany(data) {
+    NearNep141Event.emit({
+      type: FTEventKind.mint,
+      data
+    });
+  }
+}
+class FTTransferEvent {
+  static emit(data) {
+    this.emitMany([data]);
+  }
+  static emitMany(data) {
+    NearNep141Event.emit({
+      type: FTEventKind.transfer,
+      data
+    });
+  }
+}
+class FTBurnEvent {
+  static emit(data) {
+    this.emitMany([data]);
+  }
+  static emitMany(data) {
+    NearNep141Event.emit({
+      type: FTEventKind.burn,
+      data
+    });
+  }
+}
+
+// types
+
+const DATA_IMAGE_SVG_FT_ICON = "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiA/PjxzdmcgaWQ9IkxheWVyXzEiIHN0eWxlPSJlbmFibGUtYmFja2dyb3VuZDpuZXcgMCAwIDMyIDMyOyIgdmVyc2lvbj0iMS4xIiB2aWV3Qm94PSIwIDAgMzIgMzIiIHhtbDpzcGFjZT0icHJlc2VydmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiPjxzdHlsZSB0eXBlPSJ0ZXh0L2NzcyI+Cgkuc3Qwe2ZpbGw6I0ZCQzM0RTt9Cgkuc3Qxe2ZpbGw6I0U1QTUzMzt9Cgkuc3Qye2ZpbGw6I0U0RURGMjt9Cjwvc3R5bGU+PGcgaWQ9IlRva2VuIj48Zz48cGF0aCBjbGFzcz0ic3QwIiBkPSJNMTYsMkM4LjI4LDIsMiw4LjI4LDIsMTZzNi4yOCwxNCwxNCwxNHMxNC02LjI4LDE0LTE0UzIzLjcyLDIsMTYsMnogTTE2LDI2Yy01LjUxNCwwLTEwLTQuNDg2LTEwLTEwICAgIFMxMC40ODYsNiwxNiw2czEwLDQuNDg2LDEwLDEwUzIxLjUxNCwyNiwxNiwyNnoiLz48cGF0aCBjbGFzcz0ic3QxIiBkPSJNMTYsNkMxMC40ODYsNiw2LDEwLjQ4Niw2LDE2czQuNDg2LDEwLDEwLDEwczEwLTQuNDg2LDEwLTEwUzIxLjUxNCw2LDE2LDZ6IE0yMC4yNDQsMTcuMjcybC0xLjE1LDAuNjI2ICAgIGMtMC41MDQsMC4yNzUtMC45MTcsMC42ODctMS4xOTMsMS4xOWwtMC42MzEsMS4xNDZjLTAuMjU1LDAuNDY0LTAuNzQxLDAuNzUxLTEuMjcsMC43NTFzLTEuMDE1LTAuMjg4LTEuMjctMC43NTFsLTAuNjMtMS4xNDcgICAgYy0wLjI3Ny0wLjUwNC0wLjY5LTAuOTE2LTEuMTk1LTEuMTkxbC0xLjE0OC0wLjYyNUMxMS4yODksMTcuMDE5LDExLDE2LjUzMSwxMSwxNnMwLjI4OS0xLjAxOSwwLjc1Ni0xLjI3MmwxLjE1LTAuNjI2ICAgIGMwLjUwNC0wLjI3NSwwLjkxNy0wLjY4NywxLjE5My0xLjE5bDAuNjMxLTEuMTQ2YzAuMjU1LTAuNDY0LDAuNzQxLTAuNzUxLDEuMjctMC43NTFzMS4wMTUsMC4yODgsMS4yNywwLjc1MWwwLjYzLDEuMTQ3ICAgIGMwLjI3NywwLjUwMywwLjY5LDAuOTE1LDEuMTk0LDEuMTlsMS4xNDksMC42MjVDMjAuNzExLDE0Ljk4MSwyMSwxNS40NjksMjEsMTZTMjAuNzExLDE3LjAxOSwyMC4yNDQsMTcuMjcyeiIvPjxwYXRoIGNsYXNzPSJzdDIiIGQ9Ik0yMC4yNDMsMTQuNzI3bC0xLjE0OS0wLjYyNWMtMC41MDQtMC4yNzUtMC45MTctMC42ODctMS4xOTQtMS4xOWwtMC42My0xLjE0NyAgICBjLTAuMjU1LTAuNDYzLTAuNzQxLTAuNzUxLTEuMjctMC43NTFzLTEuMDE1LDAuMjg4LTEuMjcsMC43NTFsLTAuNjMsMS4xNDZjLTAuMjc2LDAuNTA0LTAuNjg5LDAuOTE2LTEuMTkzLDEuMTlsLTEuMTUsMC42MjYgICAgQzExLjI4OSwxNC45ODEsMTEsMTUuNDY5LDExLDE2czAuMjg5LDEuMDE5LDAuNzU3LDEuMjczbDEuMTQ4LDAuNjI1YzAuNTA1LDAuMjc1LDAuOTE4LDAuNjg3LDEuMTk1LDEuMTkxbDAuNjMsMS4xNDcgICAgYzAuMjU1LDAuNDYzLDAuNzQxLDAuNzUxLDEuMjcsMC43NTFjMC41MjksMCwxLjAxNS0wLjI4OCwxLjI3LTAuNzUxbDAuNjMxLTEuMTQ2YzAuMjc2LTAuNTA0LDAuNjg5LTAuOTE2LDEuMTkzLTEuMTlsMS4xNS0wLjYyNiAgICBDMjAuNzExLDE3LjAxOSwyMSwxNi41MzEsMjEsMTZTMjAuNzExLDE0Ljk4MSwyMC4yNDMsMTQuNzI3eiIvPjwvZz48L2c+PC9zdmc+";
+const THIRTY_TGAS = BigInt(30) * ONE_TERA_GAS;
+BigInt(300) * ONE_TERA_GAS;
+const GAS_FOR_FT_TRANSFER_CALL = THIRTY_TGAS;
+const GAS_FOR_RESOLVE_TRANSFER = THIRTY_TGAS;
+const NO_DEPOSIT = BigInt(0);
+const DEFAULT_METADATA = {
+  spec: "ft-1.0.0",
+  name: "Justin Case Fungible Token",
+  symbol: "JC-FT",
+  icon: DATA_IMAGE_SVG_FT_ICON,
+  reference: null,
+  reference_hash: null,
+  decimals: 18
+};
+
+var _dec$1, _class$1;
+
+// types
+
+let ContractLibrary = (_dec$1 = NearBindgen({}), _dec$1(_class$1 = class ContractLibrary {
+  /* ==== State ==== */
+  // Keep track of FT contract owner
+  ownerId = "";
+  // Keep track of each account's balances
+  accounts = new LookupMap("accounts");
+  // Total supply of all tokens.
+  total_supply = BigInt(0);
+  // The bytes for the largest possible account ID that can be registered on the contract
+  bytes_for_longest_account_id = BigInt(0);
+  // Metadata for the contract itself
+  metadata = DEFAULT_METADATA;
+
+  /* INTERNAL FUNCTIONS */
+  internal_deposit({
+    account_id,
+    amount
+  }) {
+    //  Get the current balance of the account.  If they're not registered, panic.
+    const balance = this.internal_unwrap_balance_of({
+      account_id
+    });
+
+    // Add the amount to the balance
+    const new_balance = balance + BigInt(amount);
+
+    // insert the new balance into the accounts map
+    // TODO: in the future check for balance overflow errors before depositing
+    this.accounts.set(account_id, new_balance);
+  }
+  internal_withdraw({
+    account_id,
+    amount
+  }) {
+    // Get the current balance of the account. If they're not registered, panic.
+    const balance = this.internal_unwrap_balance_of({
+      account_id
+    });
+
+    // Ensure the account has enough balance to withdraw
+    assert(balance >= amount, "The account doesn't have enough balance");
+
+    // Subtract the amount from the balance
+    const new_balance = balance - BigInt(amount);
+
+    // Insert the new balance into the accounts map
+    this.accounts.set(account_id, new_balance);
+  }
+  internal_transfer({
+    sender_id,
+    receiver_id,
+    amount,
+    memo
+  }) {
+    // Ensure the sender can't transfer to themselves
+    assert(sender_id != receiver_id, "Sender and receiver should be different");
+    // Ensure the sender can't transfer 0 tokens
+    assert(amount > BigInt(0), "The amount should be a positive number");
+
+    // Withdraw from the sender and deposit into the receiver
+    this.internal_withdraw({
+      account_id: sender_id,
+      amount
+    });
+    this.internal_deposit({
+      account_id: receiver_id,
+      amount
+    });
+
+    // Emit the transfer event
+    FTTransferEvent.emit({
+      sender_id,
+      receiver_id,
+      amount,
+      memo
+    });
+  }
+
+  // Internal method for registering an account with the contract.
+  internal_register_account({
+    account_id
+  }) {
+    if (this.accounts.containsKey(account_id)) {
+      throw new Error("The account is already registered.");
+    }
+    // Register the account with a balance of 0
+    this.accounts.set(account_id, BigInt(0));
+  }
+
+  // Internal method for force getting the balance of an account. If the account doesn't have a balance, panic with a custom message.
+  internal_unwrap_balance_of({
+    account_id
+  }) {
+    const balance = this.accounts.get(account_id);
+    if (balance == null) {
+      throw new Error(`The account ${account_id} is not registered.`);
+    }
+    return balance;
+  }
+  measure_bytes_for_longest_account_id() {
+    let initialStorageUsage = storageUsage();
+    let tmpAccountId = "a".repeat(64);
+    this.accounts.set(tmpAccountId, BigInt(0));
+    this.bytes_for_longest_account_id = storageUsage() - initialStorageUsage;
+    this.accounts.remove(tmpAccountId);
+  }
+}) || _class$1);
+
+var _dec, _dec2, _dec3, _dec4, _dec5, _dec6, _dec7, _dec8, _dec9, _dec10, _dec11, _dec12, _dec13, _dec14, _dec15, _dec16, _dec17, _dec18, _class, _class2;
+
+// types
+let Contract = (_dec = NearBindgen({}), _dec2 = initialize(), _dec3 = initialize(), _dec4 = view(), _dec5 = view(), _dec6 = call({
+  payableFunction: true
+}), _dec7 = view(), _dec8 = view(), _dec9 = view(), _dec10 = call({
+  payableFunction: true
+}), _dec11 = call({
+  payableFunction: true
+}), _dec12 = call({
+  privateFunction: true
+}), _dec13 = view(), _dec14 = view(), _dec15 = view(), _dec16 = view(), _dec17 = call({}), _dec18 = call({}), _dec(_class = (_class2 = class Contract extends ContractLibrary {
+  init({
+    owner_id = signerAccountId(),
+    total_supply = BigInt(0),
+    metadata
+  }) {
+    // Initialize the token with the owner_id as the owner
+    this.ownerId = owner_id;
+    this.metadata = metadata;
+    this.total_supply = BigInt(total_supply);
+    this.accounts = new LookupMap("accounts");
+
+    // Measure the bytes for the longest account ID and store it in the contract.
+    this.measure_bytes_for_longest_account_id();
+
+    // Register the owner's account and set their balance to the total supply.
+    this.internal_register_account({
+      account_id: owner_id
+    });
+    this.internal_deposit({
+      account_id: owner_id,
+      amount: total_supply
+    });
+
+    // Emit an event showing that the FTs were minted
+    FTMintEvent.emit({
+      accountId: owner_id,
+      amount: total_supply,
+      memo: "Initial token supply is minted"
+    });
+  }
+  init_default_meta({
+    owner_id,
+    total_supply
+  }) {
+    // Initialize the token with the owner_id as the owner and default metadata
+    this.init({
+      owner_id,
+      total_supply,
+      metadata: this.metadata
+    });
+  }
+
+  /* STORAGE MANAGEMENT */
+  storage_balance_bounds() {
+    // Calculate the required storage balance by taking the bytes for the longest account ID and multiplying by the current byte cost
+    let requiredStorageBalance = this.bytes_for_longest_account_id * storageByteCost();
+
+    // Storage balance bounds will have min == max == requiredStorageBalance
+    return {
+      min: requiredStorageBalance,
+      max: requiredStorageBalance
+    };
+  }
+  storage_balance_of({
+    account_id
+  }) {
+    // Get the storage balance of the account. Available will always be 0 since you can't overpay for storage.
+    if (this.accounts.containsKey(account_id)) {
+      return {
+        total: this.storage_balance_bounds().min,
+        available: BigInt(0)
+      };
+    } else {
+      return null;
+    }
+  }
+  storage_deposit({
+    account_id,
+    registration_only
+  }) {
+    // Get the amount of $NEAR to deposit
+    const amount = attachedDeposit();
+    // If an account was specified, use that. Otherwise, use the predecessor account.
+    let accountId = account_id ?? predecessorAccountId();
+
+    // If the account is already registered, refund the deposit.
+    if (this.accounts.containsKey(accountId)) {
+      log("The account is already registered, refunding the deposit.");
+      if (amount > BigInt(0)) {
+        NearPromise.new(accountId).transfer(amount);
+      }
+    } else {
+      // Register the account and refund any excess $NEAR
+      // Get the minimum required storage and ensure the deposit is at least that amount
+      const min_balance = this.storage_balance_bounds().min;
+      if (amount < min_balance) {
+        throw new Error("The attached deposit is less than the minimum storage balance");
+      }
+
+      // Register the account
+      this.internal_register_account({
+        account_id: accountId
+      });
+
+      // Perform a refund
+      const refund = amount - min_balance;
+      if (refund > BigInt(0)) {
+        NearPromise.new(accountId).transfer(refund);
+      }
+    }
+
+    // Return the storage balance of the account
+    return {
+      total: this.storage_balance_bounds().min,
+      available: BigInt(0)
+    };
+  }
+
+  /* FT CORE */
+  ft_metadata() {
+    // Return the metadata of the token
+    return this.metadata;
+  }
+  ft_total_supply() {
+    // Return the total supply of the token
+    return this.total_supply;
+  }
+  ft_balance_of({
+    account_id
+  }) {
+    // Return the balance of the account_id
+    return this.accounts.get(account_id, {
+      defaultValue: BigInt(0)
+    });
+  }
+  ft_transfer({
+    receiver_id,
+    amount,
+    memo
+  }) {
+    // Assert that the user attached exactly 1 yoctoNEAR. This is for security and so that the user will be required to sign with a FAK.
+    assert(attachedDeposit() == ONE_YOCTO, "1 yoctoNEAR must be attached");
+    // The sender is the user who called the method
+    const sender_id = predecessorAccountId();
+    // How many tokens the user wants to withdraw
+    const amt = amount;
+    // Transfer the tokens
+    this.internal_transfer({
+      sender_id,
+      receiver_id,
+      amount: amt,
+      memo
+    });
+  }
+  ft_transfer_call({
+    receiver_id,
+    amount,
+    memo,
+    msg
+  }) {
+    // Assert that the user attached exactly 1 yoctoNEAR. This is for security and so that the user will be required to sign with a FAK.
+    assert(attachedDeposit() == ONE_YOCTO, "1 yoctoNEAR must be attached");
+    // The sender is the user who called the method
+    const sender_id = predecessorAccountId();
+    // How many tokens the user wants to withdraw
+    const amt = amount;
+    // Transfer the tokens
+    this.internal_transfer({
+      sender_id,
+      receiver_id,
+      amount: amt,
+      memo
+    });
+
+    // Initiating receiver's call and the callback
+    // Defaulting GAS weight to 1, no attached deposit, and static GAS equal to the GAS for ft transfer call.
+    const promise = NearPromise.new(receiver_id).functionCall("ft_on_transfer", JSON.stringify({
+      sender_id,
+      amount: amt,
+      msg
+    }), NO_DEPOSIT, GAS_FOR_FT_TRANSFER_CALL).then(NearPromise.new(currentAccountId()).functionCall("ft_resolve_transfer", JSON.stringify({
+      sender_id,
+      receiver_id,
+      amount: amt
+    }), NO_DEPOSIT, GAS_FOR_RESOLVE_TRANSFER));
+    return promise.asReturn();
+  }
+  ft_resolve_transfer({
+    sender_id,
+    receiver_id,
+    amount
+  }) {
+    const amt = BigInt(amount);
+
+    // Get the unused amount from the `ft_on_transfer` call result.
+    const {
+      result,
+      success
+    } = promiseResult();
+    let unused_amount = amt;
+
+    // If the call was successful, get the return value and cast it to a U128
+    if (success) {
+      // If we can properly parse the value, the unused amount is equal to whatever is smaller - the unused amount or the original amount (to prevent malicious contracts)
+      unused_amount = result != null ? findMinValue(amt, BigInt(JSON.parse(result))) : amt;
+    } else {
+      // If the promise wasn't successful, return the original amount.
+      unused_amount = amt;
+    }
+
+    // If there is some unused amount, we should refund the sender
+    if (unused_amount > BigInt(0)) {
+      // Get the receiver's balance. We can only refund the sender if the receiver has enough balance.
+      const receiver_balance = this.accounts.get(receiver_id, {
+        defaultValue: BigInt(0)
+      });
+      log("receiver balance", unused_amount);
+      if (receiver_balance > BigInt(0)) {
+        // The amount to refund is the smaller of the unused amount and the receiver's balance as we can only refund up to what the receiver currently has.
+        const refund_amount = findMinValue(unused_amount, receiver_balance);
+
+        // Refund the sender for the unused amount
+        this.internal_transfer({
+          sender_id: receiver_id,
+          receiver_id: sender_id,
+          amount: refund_amount,
+          memo: "Refund from ft_transfer_call"
+        });
+
+        // Return what was actually used (the amount sent - refund)
+        const used_amount = amt - refund_amount;
+        return used_amount;
+      }
+    }
+
+    // Return the amount that was actually used
+    return amt;
+  }
+
+  /* CUSTOM METHODS */
+  name() {
+    return this.metadata.name;
+  }
+  owner() {
+    return this.ownerId;
+  }
+  symbol() {
+    return this.metadata.symbol;
+  }
+  decimals() {
+    return this.metadata.decimals;
+  }
+  mint({
+    accountId,
+    amount,
+    memo
+  }) {
+    // Assert that the caller is the owner
+    assert(predecessorAccountId() == this.ownerId, "Only the owner can mint tokens");
+
+    // Mint the tokens
+    this.internal_deposit({
+      account_id: accountId,
+      amount
+    });
+
+    // increase the total supply
+    this.total_supply += BigInt(amount);
+
+    // Emit the mint event
+    FTMintEvent.emit({
+      accountId,
+      amount,
+      memo
+    });
+  }
+  burn({
+    amount,
+    memo
+  }) {
+    // Assert that the caller is the account holder
+    assert(predecessorAccountId() == signerAccountId() && this.accounts.containsKey(signerAccountId()), "Only the account holder can burn tokens");
+
+    // Burn the tokens
+    this.internal_withdraw({
+      account_id: signerAccountId(),
+      amount
+    });
+
+    // decrease the total supply
+    this.total_supply -= BigInt(amount);
+
+    // Emit the burn event
+    FTBurnEvent.emit({
+      accountId: signerAccountId(),
+      amount,
+      memo
+    });
+  }
+}, _applyDecoratedDescriptor(_class2.prototype, "init", [_dec2], Object.getOwnPropertyDescriptor(_class2.prototype, "init"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "init_default_meta", [_dec3], Object.getOwnPropertyDescriptor(_class2.prototype, "init_default_meta"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "storage_balance_bounds", [_dec4], Object.getOwnPropertyDescriptor(_class2.prototype, "storage_balance_bounds"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "storage_balance_of", [_dec5], Object.getOwnPropertyDescriptor(_class2.prototype, "storage_balance_of"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "storage_deposit", [_dec6], Object.getOwnPropertyDescriptor(_class2.prototype, "storage_deposit"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_metadata", [_dec7], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_metadata"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_total_supply", [_dec8], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_total_supply"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_balance_of", [_dec9], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_balance_of"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_transfer", [_dec10], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_transfer"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_transfer_call", [_dec11], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_transfer_call"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "ft_resolve_transfer", [_dec12], Object.getOwnPropertyDescriptor(_class2.prototype, "ft_resolve_transfer"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "name", [_dec13], Object.getOwnPropertyDescriptor(_class2.prototype, "name"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "owner", [_dec14], Object.getOwnPropertyDescriptor(_class2.prototype, "owner"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "symbol", [_dec15], Object.getOwnPropertyDescriptor(_class2.prototype, "symbol"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "decimals", [_dec16], Object.getOwnPropertyDescriptor(_class2.prototype, "decimals"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "mint", [_dec17], Object.getOwnPropertyDescriptor(_class2.prototype, "mint"), _class2.prototype), _applyDecoratedDescriptor(_class2.prototype, "burn", [_dec18], Object.getOwnPropertyDescriptor(_class2.prototype, "burn"), _class2.prototype), _class2)) || _class);
+function burn() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.burn(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function mint() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.mint(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function decimals() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.decimals(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function symbol() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.symbol(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function owner() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.owner(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function name() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.name(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_resolve_transfer() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_resolve_transfer(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_transfer_call() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_transfer_call(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_transfer() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_transfer(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_balance_of() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_balance_of(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_total_supply() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_total_supply(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function ft_metadata() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.ft_metadata(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function storage_deposit() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.storage_deposit(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function storage_balance_of() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.storage_balance_of(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function storage_balance_bounds() {
+  const _state = Contract._getState();
+  if (!_state && Contract._requireInit()) {
+    throw new Error("Contract must be initialized");
+  }
+  const _contract = Contract._create();
+  if (_state) {
+    Contract._reconstruct(_contract, _state);
+  }
+  const _args = Contract._getArgs();
+  const _result = _contract.storage_balance_bounds(_args);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function init_default_meta() {
+  const _state = Contract._getState();
+  if (_state) {
+    throw new Error("Contract already initialized");
+  }
+  const _contract = Contract._create();
+  const _args = Contract._getArgs();
+  const _result = _contract.init_default_meta(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+function init() {
+  const _state = Contract._getState();
+  if (_state) {
+    throw new Error("Contract already initialized");
+  }
+  const _contract = Contract._create();
+  const _args = Contract._getArgs();
+  const _result = _contract.init(_args);
+  Contract._saveToStorage(_contract);
+  if (_result !== undefined) if (_result && _result.constructor && _result.constructor.name === "NearPromise") _result.onReturn();else env.value_return(Contract._serialize(_result, true));
+}
+
+export { burn, decimals, ft_balance_of, ft_metadata, ft_resolve_transfer, ft_total_supply, ft_transfer, ft_transfer_call, init, init_default_meta, mint, name, owner, storage_balance_bounds, storage_balance_of, storage_deposit, symbol };
+//# sourceMappingURL=FT_contract.js.map

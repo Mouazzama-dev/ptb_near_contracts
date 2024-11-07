@@ -1,3 +1,5 @@
 DEFINE_NEAR_METHOD(calculateAndMint)
 DEFINE_NEAR_METHOD(getEmissionsAccount)
 DEFINE_NEAR_METHOD(init)
+DEFINE_NEAR_METHOD(storage_balance_bounds)
+DEFINE_NEAR_METHOD(storage_deposit)

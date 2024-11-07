@@ -3625,7 +3625,7 @@ let ContractLibrary = (_dec$1 = NearBindgen({}), _dec$1(_class$1 = class Contrac
     });
 
     // Add the amount to the balance
-    const new_balance = balance + BigInt(amount);
+    const new_balance = balance + amount;
 
     // insert the new balance into the accounts map
     // TODO: in the future check for balance overflow errors before depositing

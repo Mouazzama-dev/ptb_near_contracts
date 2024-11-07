@@ -43,7 +43,7 @@ import {
       const balance = this.internal_unwrap_balance_of({ account_id });
   
       // Add the amount to the balance
-      const new_balance = balance + BigInt(amount);
+      const new_balance = balance + amount;
   
       // insert the new balance into the accounts map
       // TODO: in the future check for balance overflow errors before depositing

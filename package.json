@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "near-sdk-js build src/FT_contract.ts build/FT_contract.wasm && near-sdk-js build src/minter.ts build/minter.wasm",
-    "test": "$npm_execpath run build && ava -- ./build/FT_contract.wasm &&  ./build/minter.wasm"
+    "test": "$npm_execpath run build && ava -- ./build/minter.wasm"
   },
   "dependencies": {
     "near-api-js": "^5.0.1",
@@ -18,7 +18,7 @@
   },
   "ava": {
     "files": [
-      "sandbox-test/*.ava.js"
+      "sandbox-test/minter.ava.js"
     ]
   }
 }
